@@ -1,8 +1,17 @@
 package io.iron.ironmq;
 
+import io.iron.ironmq.util.MessageBodyInflater;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.Reader;
+import java.io.InputStream;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.zip.Deflater;
+import java.util.zip.DeflaterOutputStream;
+
+import org.apache.commons.codec.binary.Base64;
 
 import com.google.gson.Gson;
 
@@ -123,7 +132,8 @@ public class Queue {
         MessagesReservationModel payload = new MessagesReservationModel(numberOfMessages, timeout, wait);
         String url = "queues/" + name + "/reservations";
         IronReader reader = client.post(url, gson.toJson(payload));
-        Messages messages = gson.fromJson(reader.reader, Messages.class);
+        Messages messages = unzipMessages(gson.fromJson(reader.reader, Messages.class));
+        
         reader.close();
         return messages;
     }
@@ -164,7 +174,7 @@ public class Queue {
         }
         IronReader reader = client.get("queues/" + name + "/messages?n=" + numberOfMessages);
         try {
-            return gson.fromJson(reader.reader, Messages.class);
+            return unzipMessages(gson.fromJson(reader.reader, Messages.class));
         } finally {
             reader.close();
         }
@@ -388,7 +398,7 @@ public class Queue {
      */
     public String push(String msg, long delay) throws IOException {
         Message message = new Message();
-        message.setBody(msg);
+        message.setBody(getZippedBody(msg));
         message.setDelay(delay);
 
         Messages msgs = new Messages(message);
@@ -413,7 +423,7 @@ public class Queue {
         ArrayList<Message> messages = new ArrayList<Message>();
         for (String messageName: msg){
             Message message = new Message();
-            message.setBody(messageName);
+            message.setBody(getZippedBody(messageName));
             message.setDelay(delay);
             messages.add(message);
         }
@@ -839,5 +849,40 @@ public class Queue {
         String url = "queues/" + name + "/alerts/" + alert_id;
         IronReader reader = client.delete(url);
         reader.close();
+    }
+    
+    private String getZippedBody(String message) throws IOException {
+      byte[] msgBytes = message.getBytes(Charset.forName("UTF-8"));
+      // log.debug("Original message length: {} bytes", msg.length());
+      byte[] zippedBytes;
+      InputStream bis = new ByteArrayInputStream(msgBytes);
+      ByteArrayOutputStream bos = new ByteArrayOutputStream();
+      DeflaterOutputStream dos =
+          new DeflaterOutputStream(bos, new Deflater(Deflater.BEST_COMPRESSION));
+      try {
+        MessageBodyInflater.getBytes(bis, dos);
+        dos.finish();
+        bos.flush();
+        zippedBytes = bos.toByteArray();
+        return Base64.encodeBase64URLSafeString(zippedBytes);
+        // log.debug("Compressed message length: {} bytes", message.getBody()
+        // .length());
+      } finally {
+        if (bis != null)
+          bis.close();
+        bis = null;
+        if (bos != null)
+          bos.close();
+        bos = null;
+        if (dos != null)
+          dos.close();
+        dos = null;
+      }
+    }
+
+    private Messages unzipMessages(Messages zippedMessages) throws IOException {
+      for (Message msg : zippedMessages.getMessages())
+        msg.setBody(MessageBodyInflater.inflateBody(msg.getBody()));
+      return zippedMessages;
     }
 }
